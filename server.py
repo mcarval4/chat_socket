@@ -1,26 +1,25 @@
 #!/usr/bin/env python3
-"""Server for multithreaded (asynchronous) chat application."""
+
 from socket import AF_INET, socket, SOCK_STREAM
 from threading import Thread
 
-
+# Configura a entrada de novos clientes.
 def accept_incoming_connections():
-    """Sets up handling for incoming clients."""
     while True:
         client, client_address = SERVER.accept()
-        print("%s:%s has connected." % client_address)
-        client.send(bytes("Greetings from the cave! Now type your name and press enter!", "utf8"))
+        print("%s:%s conectou-se." % client_address)
+        client.send(bytes("Bem-vindo ao chat!", "utf8"))
+        client.send(bytes("Digite o seu o nome!", "utf8"))
         addresses[client] = client_address
         Thread(target=handle_client, args=(client,)).start()
 
 
-def handle_client(client):  # Takes client socket as argument.
-    """Handles a single client connection."""
-
+# Configura a conexão do cliente.
+def handle_client(client):
     name = client.recv(BUFSIZ).decode("utf8")
-    welcome = 'Welcome %s! If you ever want to quit, type {quit} to exit.' % name
+    welcome = 'Bem-vindo %s! Caso queira sair, digite {quit}.' % name
     client.send(bytes(welcome, "utf8"))
-    msg = "%s has joined the chat!" % name
+    msg = "%s entrou no chat!" % name
     broadcast(bytes(msg, "utf8"))
     clients[client] = name
 
@@ -32,21 +31,22 @@ def handle_client(client):  # Takes client socket as argument.
             client.send(bytes("{quit}", "utf8"))
             client.close()
             del clients[client]
-            broadcast(bytes("%s has left the chat." % name, "utf8"))
+            broadcast(bytes("%s saiu do chat." % name, "utf8"))
             break
 
 
-def broadcast(msg, prefix=""):  # prefix is for name identification.
-    """Broadcasts a message to all the clients."""
-
+# Transmite a mensagem para todos os clientes.
+def broadcast(msg, prefix=""):
     for sock in clients:
         sock.send(bytes(prefix, "utf8")+msg)
 
-        
+# def private_broadcast(msg, prefix="", )
+
+       
 clients = {}
 addresses = {}
 
-HOST = ''
+HOST = "localhost"
 PORT = 33000
 BUFSIZ = 1024
 ADDR = (HOST, PORT)
@@ -56,7 +56,7 @@ SERVER.bind(ADDR)
 
 if __name__ == "__main__":
     SERVER.listen(5)
-    print("Waiting for connection...")
+    print("Aguardando conexão...")
     ACCEPT_THREAD = Thread(target=accept_incoming_connections)
     ACCEPT_THREAD.start()
     ACCEPT_THREAD.join()
