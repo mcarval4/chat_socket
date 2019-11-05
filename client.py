@@ -1,76 +1,84 @@
-#!/usr/bin/env python3
+import sys
+import threading
+import Pyro4
+import Pyro4.socketutil
 
-from socket import AF_INET, socket, SOCK_STREAM
-from threading import Thread
-import tkinter
 
-# Configura o recebimento das mensagens.
-def receive():
-    while True:
+if sys.version_info < (3, 0):
+    input = raw_input()
+
+
+# O processo está rodando seu próprio thread, para lidar com o servidor
+# com as mensagens de retorno enquanto o thread principal está processando
+# as mensagens de entrada dos usuários.
+class Chatter(object):
+    def __init__(self):
+        self.chatbox = Pyro4.core.Proxy('PYRONAME:chatbox')
+        self.abort = 0
+
+    @Pyro4.expose
+    @Pyro4.oneway
+
+    # Formato de print da mensagem
+    def message(self, nick, msg):
+        if nick != self.nick:
+            print('[{0}] {1}'.format(nick, msg))
+
+    def pv_message(self, nick, msg, obj):
+        if nick != self.nick:
+            print('[{0}] {1}'.format(nick, msg))
+
+
+    # Inicia o processo do chat após o login/cadastramento do usuário
+    def start(self):
+        nicks = self.chatbox.getNicks()
+        if nicks:
+            print('Os seguintes usuários estão no servidor: %s' % (', '.join(nicks)))
+        channels = sorted(self.chatbox.getChannels())
+        if channels:
+            print('Os seguintes canais já existem: %s' % (', '.join(channels)))
+            self.channel = input('Escolha um canal ou crie um novo: ').strip()
+        else:
+            print('O servidor não possui canais ativos.')
+            self.channel = input('Nome para o novo canal: ').strip()
+        self.nick = input('Escolha um apelido: ').strip()
+        people = self.chatbox.join(self.channel, self.nick, self)
+        print('Entrou no canal %s como %s' % (self.channel, self.nick))
+        print('Pessoas no canal: %s' % (', '.join(people)))
+        print('Pronto para mensagens! Digite /quit para sair')
         try:
-            msg = client_socket.recv(BUFSIZ).decode("utf8")
-            msg_list.insert(tkinter.END, msg)
-        except OSError:  # O cliente saiu do chat.
-            break
+            try:
+                while not self.abort:
+                    line = input('> ').strip()
+                    if line == '/quit':
+                        break
+                    # if line == line.startswith('#%s' % self.nick):
+                    #     self.chatbox.private_publish(self.nick, line)
+                    if line:
+                        self.chatbox.publish(self.channel, self.nick, line)
+            except EOFError:
+                pass
+        finally:
+            self.chatbox.leave(self.channel, self.nick)
+            self.abort = 1
+            self._pyroDaemon.shutdown()
 
 
-# Configura o envio das mensagens.
-def send(event=None):
-    msg = my_msg.get()
-    my_msg.set("")  # Limpa o input do texto.
-    client_socket.send(bytes(msg, "utf8"))
-    if msg == "{quit}":
-        client_socket.close()
-        top.quit()
+# Cria o processo rodando em segundo plano
+class DaemonThread(threading.Thread):
+    def __init__(self, chatter):
+        threading.Thread.__init__(self)
+        self.chatter = chatter
+        self.setDaemon(True)
+
+    def run(self):
+        with Pyro4.core.Daemon() as daemon:
+            daemon.register(self.chatter)
+            daemon.requestLoop(lambda: not self.chatter.abort)
 
 
-# Função para fechar a tela.
-def on_closing(event=None):
-    my_msg.set("{quit}")
-    send()
-
-top = tkinter.Tk()
-top.title("Chat c/ Socket - Programação Distribuída e Paralela")
-
-messages_frame = tkinter.Frame(top)
-my_msg = tkinter.StringVar()  # Para enviar as mensagens.
-my_msg.set("Type your messages here.")
-scrollbar = tkinter.Scrollbar(messages_frame)  # Para navegar entre as mensagens.
-
-# Histórico das mensagens.
-msg_list = tkinter.Listbox(messages_frame, height=15, width=50, yscrollcommand=scrollbar.set)
-scrollbar.pack(side=tkinter.RIGHT, fill=tkinter.Y)
-msg_list.pack(side=tkinter.LEFT, fill=tkinter.BOTH)
-msg_list.pack()
-messages_frame.pack()
-
-entry_field = tkinter.Entry(top, textvariable=my_msg)
-entry_field.bind("<Return>", send)
-entry_field.pack()
-send_button = tkinter.Button(top, text="Enviar", command=send)
-send_button.pack()
-
-top.protocol("WM_DELETE_WINDOW", on_closing)
-
-#----Configuração do socket----
-HOST = input('Entre com o host (padrão: localhost): ')
-PORT = input('Entre com a porta (padrão: 33000): ')
-if not HOST:
-    HOST = "localhost"
-else:
-    HOST = HOST
-
-if not PORT:
-    PORT = 33000
-else:
-    PORT = int(PORT)
-
-BUFSIZ = 1024
-ADDR = (HOST, PORT)
-
-client_socket = socket(AF_INET, SOCK_STREAM)
-client_socket.connect(ADDR)
-
-receive_thread = Thread(target=receive)
-receive_thread.start()
-tkinter.mainloop()
+chatter = Chatter()
+daemonthread = DaemonThread(chatter)
+daemonthread.start()
+chatter.start()
+print('Exit.')

@@ -1,63 +1,103 @@
-#!/usr/bin/env python3
+import re
 
-from socket import AF_INET, socket, SOCK_STREAM
-from threading import Thread
+import Pyro4
 
-# Configura a entrada de novos clientes.
-def accept_incoming_connections():
-    while True:
-        client, client_address = SERVER.accept()
-        print("%s:%s conectou-se." % client_address)
-        client.send(bytes("Bem-vindo ao chat!", "utf8"))
-        client.send(bytes("Digite o seu o nome!", "utf8"))
-        addresses[client] = client_address
-        Thread(target=handle_client, args=(client,)).start()
+# Administração de servidor de chat.
+# Trata logins, logouts, canais e apelidos, 
+
+@Pyro4.expose
+@Pyro4.behavior(instance_mode="single")
+class ChatBox(object):
+    def __init__(self):
+        self.channels = {} # canais registrados {canal --> (apelido, client callback) lista}
+        self.nicks = []  # todos apelidos registrados
+
+    def getChannels(self):
+        return list(self.channels.keys())
+
+    def getNicks(self):
+        self.nicks
+
+    # Função para criar um novo canal ou apelido
+    def join(self, channel, nick, callback):
+        if not channel or not nick:
+            raise ValueError("canal ou apelido inválido")
+        if nick in self.nicks:
+            raise ValueError('esse apelido já está em uso')
+        if channel not in self.channels:
+            print('CRIANDO UM NOVO CANAL %s' % channel)
+            self.channels[channel] = []
+        self.channels[channel].append((nick, callback))
+        self.nicks.append(nick)
+        print("%s ENTROU %s" % (nick, channel))
+        self.publish(channel, 'SERVIDOR', '** ' + nick + ' entrou **')
+        return [nick for (nick, c) in self.channels[channel]]  # retorna todos os apelidos do canal
+
+    # Função para saída do usuário e para limpar a lista com os usuários que saíram
+    def leave(self, channel, nick):
+        if channel not in self.channels:
+            print('CANAL DESCONHECIDO IGNORADO %s' % channel)
+            return
+        for (n, c) in self.channels[channel]:
+            if n == nick:
+                self.channels[channel].remove((n, c))
+                break
+        self.publish(channel, 'SERVIDOR', '** ' + nick + ' saiu **')
+        if len(self.channels[channel]) < 1:
+            del self.channels[channel]
+            print('CANAL REMOVIDO %s' % channel)
+        self.nicks.remove(nick)
+        print("%s SAIU %s" % (nick, channel))
 
 
-# Configura a conexão do cliente.
-def handle_client(client):
-    name = client.recv(BUFSIZ).decode("utf8")
-    welcome = 'Bem-vindo %s! Caso queira sair, digite {quit}.' % name
-    client.send(bytes(welcome, "utf8"))
-    msg = "%s entrou no chat!" % name
-    broadcast(bytes(msg, "utf8"))
-    clients[client] = name
+    # Função para publicar as mensagens e remover canais ociosos
+    def publish(self, channel, nick, msg):
+        if channel not in self.channels:
+            print('CANAL DESCONHECIDO IGNORADO %s' % channel)
+            return
 
-    while True:
-        msg = client.recv(BUFSIZ)
-        if msg != bytes("{quit}", "utf8"):
-            broadcast(msg, name+": ")
-        else:
-            client.send(bytes("{quit}", "utf8"))
-            client.close()
-            del clients[client]
-            broadcast(bytes("%s saiu do chat." % name, "utf8"))
-            break
+        match = re.match("^\#(\w+)\s(.+)", msg)
 
+        for (n, c) in self.channels[channel][:]:
+            # print(self.channels[channel][1])
+            # print(getNicks())
+            print("n -> %s\n c -> %s" % (n, c))
 
-# Transmite a mensagem para todos os clientes.
-def broadcast(msg, prefix=""):
-    for sock in clients:
-        sock.send(bytes(prefix, "utf8")+msg)
+            try:
+                if match == None:
+                    c.message(nick, msg)  # oneway call
+                elif match.group(1) == n:
+                    print("Tentando mandar msg privada de {} para {}".format(nick, n))
+                    m = "Privado de {}: {}".format(nick, match.group(2))
+                    c.message(nick, m)  # oneway call
 
-# def private_broadcast(msg, prefix="", )
+            except Pyro4.errors.ConnectionClosedError:
+                # queda de conexão, remove o listener se ainda houver
+                # checa a existência porque outra thread por ter finalizado.
+                if (n, c) in self.channels[channel]:
+                    self.channels[channel].remove((n, c))
+                    print('Dead listener removidos %s %s' % (n, c))
 
-       
-clients = {}
-addresses = {}
+    # Função para enviar as mensagens privadas para os usuários
+    def private_publish(self, nick, msg):
+        if nick not in self.nicks:
+            print('USUÁRIO DESCONHECIDO IGNORADO %s' % nick)
+            return
+        for (n, c) in self.nicks[nick][:]:
+            try:
+                c_split = c.split()
+                print(c_split[6][:57])
+                uri_string = c_split[6][:57]
+                c.pv_message(nick, msg, uri_string)
+            except Pyro4.errors.ConnectionClosedError:
+                if (n, c) in self.nicks[nick]:
+                    self.nicks[nick].remove((n, c))
+                    print('Dead listener removidos %s %s' % (n, c))
+                    
 
-HOST = "localhost"
-PORT = 33000
-BUFSIZ = 1024
-ADDR = (HOST, PORT)
-
-SERVER = socket(AF_INET, SOCK_STREAM)
-SERVER.bind(ADDR)
-
-if __name__ == "__main__":
-    SERVER.listen(5)
-    print("Aguardando conexão...")
-    ACCEPT_THREAD = Thread(target=accept_incoming_connections)
-    ACCEPT_THREAD.start()
-    ACCEPT_THREAD.join()
-    SERVER.close()
+Pyro4.Daemon.serveSimple(
+    {
+        ChatBox: "chatbox"
+    },
+    ns=True
+)
